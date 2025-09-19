@@ -1,0 +1,5 @@
+{
+  "name": "Sketch-to-3D Mesh AI",
+  "description": "An AI-powered application to convert 2D sketches into fully editable 3D mesh models. Upload a sketch, watch the AI pipeline in action, and view the generated 3D model.",
+  "requestFramePermissions": []
+}
