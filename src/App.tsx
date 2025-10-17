@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 // Fix: Import Gemini API client and types
 import { GoogleGenAI, Type } from "@google/genai";
@@ -65,68 +66,62 @@ const App: React.FC = () => {
     setError(null);
     setGeneratedGeometry(null); // Hide old model
     
-    const stages = [
-      PipelineStage.SKETCH_PREP,
-      PipelineStage.MESH_PREP,
-      PipelineStage.PAIRING,
-      PipelineStage.TRAINING,
-      PipelineStage.OUTPUT,
-    ];
-
-    const newCompletedStages = new Set<PipelineStage>();
+    // Streamline the pipeline UI update for perceived speed
+    const preGenerationStages = new Set<PipelineStage>([
+        PipelineStage.SKETCH_PREP,
+        PipelineStage.MESH_PREP,
+        PipelineStage.PAIRING,
+        PipelineStage.TRAINING,
+    ]);
+    setPipelineStatus({ currentStage: PipelineStage.OUTPUT, completedStages: preGenerationStages });
 
     try {
-      for (const stage of stages) {
-        setPipelineStatus({ currentStage: stage, completedStages: new Set(newCompletedStages) });
-        
-        if (stage === PipelineStage.OUTPUT) {
-          // Actual Gemini call to generate 3D model geometry
-          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-          const schema = {
-              type: Type.OBJECT,
-              properties: {
-                  vertices: {
-                      type: Type.ARRAY,
-                      description: 'Flat array of vertex coordinates [x1, y1, z1, x2, y2, z2, ...].',
-                      items: { type: Type.NUMBER }
-                  },
-                  faces: {
-                      type: Type.ARRAY,
-                      description: 'Flat array of vertex indices for triangular faces [f1_v1, f1_v2, f1_v3, f2_v1, f2_v2, f2_v3, ...].',
-                      items: { type: Type.INTEGER }
-                  }
+      // Actual Gemini call to generate 3D model geometry
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const schema = {
+          type: Type.OBJECT,
+          properties: {
+              vertices: {
+                  type: Type.ARRAY,
+                  description: 'Flat array of vertex coordinates [x1, y1, z1, x2, y2, z2, ...].',
+                  items: { type: Type.NUMBER }
               },
-              required: ['vertices', 'faces']
-          };
-
-          const imagePart = await fileToGenerativePart(sketchFile);
-          const response = await ai.models.generateContent({
-              model: 'gemini-2.5-flash',
-              contents: {
-                  parts: [
-                      imagePart,
-                      { text: 'Analyze this sketch and generate a simple 3D mesh representing it. The mesh should be centered at the origin and scaled to fit within a 2x2x2 cube. Provide vertices and faces according to the schema.' }
-                  ]
-              },
-              config: {
-                  responseMimeType: 'application/json',
-                  responseSchema: schema,
-                  temperature: 0.2,
+              faces: {
+                  type: Type.ARRAY,
+                  description: 'Flat array of vertex indices for triangular faces [f1_v1, f1_v2, f1_v3, f2_v1, f2_v2, f2_v3, ...].',
+                  items: { type: Type.INTEGER }
               }
-          });
-          
-          const resultJson = JSON.parse(response.text.trim());
-          setGeneratedGeometry(resultJson);
+          },
+          required: ['vertices', 'faces']
+      };
 
-        } else {
-          // Simulate work for other stages
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-
-        newCompletedStages.add(stage);
-      }
+      const imagePart = await fileToGenerativePart(sketchFile);
+      const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: {
+              parts: [
+                  imagePart,
+                  // Optimized prompt for faster generation
+                  { text: 'Convert this 2D sketch into a simple 3D mesh. Center it and scale it to a 2x2x2 cube. Provide vertices and faces as JSON.' }
+              ]
+          },
+          config: {
+              responseMimeType: 'application/json',
+              responseSchema: schema,
+              temperature: 0.2,
+          }
+      });
       
-      setPipelineStatus({ currentStage: null, completedStages: newCompletedStages });
+      const text = response.text?.trim();
+      if (!text) {
+        throw new Error("The model returned an empty response. Please try a different sketch.");
+      }
+      const resultJson = JSON.parse(text);
+      setGeneratedGeometry(resultJson);
+
+      const allStagesCompleted = new Set(preGenerationStages);
+      allStagesCompleted.add(PipelineStage.OUTPUT);
+      setPipelineStatus({ currentStage: null, completedStages: allStagesCompleted });
     } catch (e) {
       console.error(e);
       setError(`An error occurred during model generation: ${e instanceof Error ? e.message : String(e)}`);

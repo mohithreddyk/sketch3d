@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import * as THREE from 'three';
@@ -62,35 +63,16 @@ const App: React.FC = () => {
     setGeneratedGeometries([]);
     setSelectedGeometryIndex(null);
     
-    const stages = [
-      PipelineStage.SKETCH_PREP,
-      PipelineStage.MESH_PREP,
-      PipelineStage.PAIRING,
-      PipelineStage.TRAINING,
-      PipelineStage.OUTPUT,
-    ];
-
-    const newCompletedStages = new Set<PipelineStage>();
+    // Streamline the pipeline UI update for perceived speed
+    const preGenerationStages = new Set<PipelineStage>([
+        PipelineStage.SKETCH_PREP,
+        PipelineStage.MESH_PREP,
+        PipelineStage.PAIRING,
+        PipelineStage.TRAINING,
+    ]);
+    setPipelineStatus({ currentStage: PipelineStage.OUTPUT, completedStages: preGenerationStages });
 
     try {
-      setPipelineStatus({ currentStage: PipelineStage.SKETCH_PREP, completedStages: new Set() });
-      await new Promise(resolve => setTimeout(resolve, 500));
-      newCompletedStages.add(PipelineStage.SKETCH_PREP);
-      
-      setPipelineStatus({ currentStage: PipelineStage.MESH_PREP, completedStages: newCompletedStages });
-      await new Promise(resolve => setTimeout(resolve, 500));
-      newCompletedStages.add(PipelineStage.MESH_PREP);
-
-      setPipelineStatus({ currentStage: PipelineStage.PAIRING, completedStages: newCompletedStages });
-      await new Promise(resolve => setTimeout(resolve, 500));
-      newCompletedStages.add(PipelineStage.PAIRING);
-
-      setPipelineStatus({ currentStage: PipelineStage.TRAINING, completedStages: newCompletedStages });
-      await new Promise(resolve => setTimeout(resolve, 500));
-      newCompletedStages.add(PipelineStage.TRAINING);
-      
-      setPipelineStatus({ currentStage: PipelineStage.OUTPUT, completedStages: newCompletedStages });
-      
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const schema = {
           type: Type.OBJECT,
@@ -114,29 +96,49 @@ const App: React.FC = () => {
       const generationPromises = Array.from({ length: numberOfVariations }, () => 
         ai.models.generateContent({
           model: 'gemini-2.5-flash',
-          // FIX: The 'contents' field for a single-turn multimodal request should be an object, not an array.
           contents: {
               parts: [
                   imagePart,
-                  { text: 'Analyze this sketch and generate a creative, simple 3D mesh variation representing it. The mesh should be centered at the origin and scaled to fit within a 2x2x2 cube. Provide vertices and faces according to the schema.' }
+                  // Optimized prompt for faster generation
+                  { text: 'Convert the provided 2D sketch into a 3D mesh. Ensure the model is centered and fits within a 2x2x2 cube. Output the geometry as vertices and faces in the required JSON format.' }
               ]
           },
           config: {
+              systemInstruction: 'You are an expert 3D modeling AI. Your task is to convert 2D sketches into high-quality 3D mesh data (vertices and faces). Prioritize accuracy and adherence to the visual details of the source sketch.',
               responseMimeType: 'application/json',
               responseSchema: schema,
-              temperature: 0.9, // Higher temperature for more variation
+              temperature: 0.2,
           }
         })
       );
 
       const responses = await Promise.all(generationPromises);
-      const geometries = responses.map(response => JSON.parse(response.text.trim()));
+      const geometries = responses
+        .map(response => {
+            try {
+                const text = response.text?.trim();
+                if (text) {
+                    return JSON.parse(text);
+                }
+                console.warn('Received empty response from model for one variation.');
+                return null;
+            } catch (e) {
+                console.error('Failed to parse JSON for one variation:', response.text, e);
+                return null;
+            }
+        })
+        .filter((g): g is GeneratedGeometry => g !== null);
+
+      if (geometries.length === 0) {
+          throw new Error("The model failed to generate valid 3D data. Please try a different sketch or adjust your settings.");
+      }
       
       setGeneratedGeometries(geometries);
       setSelectedGeometryIndex(0);
 
-      newCompletedStages.add(PipelineStage.OUTPUT);
-      setPipelineStatus({ currentStage: null, completedStages: newCompletedStages });
+      const allStagesCompleted = new Set(preGenerationStages);
+      allStagesCompleted.add(PipelineStage.OUTPUT);
+      setPipelineStatus({ currentStage: null, completedStages: allStagesCompleted });
 
     } catch (e) {
       console.error(e);

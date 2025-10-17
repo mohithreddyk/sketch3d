@@ -1,7 +1,16 @@
 import React, { Suspense, useRef, forwardRef, useMemo } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls, Stage, PresentationControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
+
+// Fix: Manually extend react-three-fiber with necessary three.js components
+// This resolves 'Property does not exist on type JSX.IntrinsicElements' errors.
+extend({
+  Group: THREE.Group,
+  Mesh: THREE.Mesh,
+  MeshStandardMaterial: THREE.MeshStandardMaterial,
+  Color: THREE.Color,
+});
 
 interface ViewerProps {
   geometry: { vertices: number[]; faces: number[] } | null;
