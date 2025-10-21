@@ -1,10 +1,9 @@
-import React, { Suspense, useRef, forwardRef, useMemo } from 'react';
-import { Canvas, useFrame, extend } from '@react-three/fiber';
-import { OrbitControls, Stage, PresentationControls, Html } from '@react-three/drei';
+import React, { Suspense, forwardRef, useMemo } from 'react';
+import { Canvas, extend } from '@react-three/fiber';
+import { OrbitControls, Stage, PresentationControls, Html, Grid } from '@react-three/drei';
 import * as THREE from 'three';
+import { GridIcon } from './icons/GridIcon';
 
-// Fix: Manually extend react-three-fiber with necessary three.js components
-// This resolves 'Property does not exist on type JSX.IntrinsicElements' errors.
 extend({
   Group: THREE.Group,
   Mesh: THREE.Mesh,
@@ -22,8 +21,6 @@ interface GeneratedModelProps {
   geometryData: { vertices: number[]; faces: number[] };
 }
 const GeneratedModel = forwardRef<THREE.Group, GeneratedModelProps>(({ geometryData }, ref) => {
-    const meshRef = useRef<THREE.Mesh>(null!);
-    
     const geometry = useMemo(() => {
         try {
             const geo = new THREE.BufferGeometry();
@@ -38,21 +35,13 @@ const GeneratedModel = forwardRef<THREE.Group, GeneratedModelProps>(({ geometryD
         }
     }, [geometryData]);
 
-    useFrame((state, delta) => {
-        if (meshRef.current) {
-            meshRef.current.rotation.y += delta * 0.5;
-        }
-    });
-
-    if (!geometry) {
-        return null;
-    }
-
     return (
         <group ref={ref}>
-            <mesh ref={meshRef} geometry={geometry} castShadow>
-                <meshStandardMaterial color="#00A9FF" roughness={0.3} metalness={0.1} />
-            </mesh>
+            {geometry && (
+                 <mesh geometry={geometry} castShadow>
+                    <meshStandardMaterial color="#39FF14" roughness={0.4} metalness={0.2} emissive="#000000" />
+                </mesh>
+            )}
         </group>
     );
 });
@@ -62,41 +51,49 @@ GeneratedModel.displayName = 'GeneratedModel';
 const Loader: React.FC = () => {
     return (
         <Html center>
-            <div className="text-content text-center">
+            <div className="text-center text-brand-primary bg-base-100/80 p-8 rounded-lg backdrop-blur-md">
                 <div className="w-16 h-16 border-4 border-dashed rounded-full animate-spin border-brand-primary mx-auto"></div>
-                <p className="mt-4 text-lg">Generating 3D model...</p>
-                <p className="text-sm text-gray-400">The AI is hard at work</p>
+                <p className="mt-4 text-lg font-bold">GENERATING MODEL...</p>
+                <p className="text-sm text-content-muted">AI is processing the sketch</p>
             </div>
         </Html>
     );
 }
 
-
 export const Viewer: React.FC<ViewerProps> = ({ geometry, isGenerating, modelRef }) => {
   return (
-    <div className="flex-1 bg-black relative">
-      <Canvas dpr={[1, 2]} shadows camera={{ fov: 45 }}>
-        <color attach="background" args={['#1E293B']} />
+    <div className="w-full h-full bg-base-100 relative">
+      <Canvas dpr={[1, 2]} shadows camera={{ fov: 45, position: [0, 2, 5] }}>
+        <color attach="background" args={['#050816']} />
         <Suspense fallback={null}>
-        {isGenerating ? (
-            <Loader />
-        ) : (
-            <>
-            <PresentationControls speed={1.5} global zoom={0.7} polar={[-0.1, Math.PI / 4]}>
-                <Stage environment="city" intensity={0.6} shadows={false}>
-                    {geometry && <GeneratedModel geometryData={geometry} ref={modelRef} />}
+            <PresentationControls speed={1.5} global zoom={0.8} polar={[-Math.PI / 3, Math.PI / 3]} azimuth={[-Math.PI / 4, Math.PI / 4]}>
+                <Stage environment="city" intensity={0.5} shadows={false}>
+                    {geometry && !isGenerating && <GeneratedModel geometryData={geometry} ref={modelRef} />}
                 </Stage>
             </PresentationControls>
-            <OrbitControls />
-            </>
-        )}
+            <Grid
+                position={[0, -1, 0]}
+                args={[10, 10]}
+                infiniteGrid
+                fadeDistance={25}
+                fadeStrength={4}
+                cellSize={1}
+                sectionSize={5}
+                cellColor="#1A1F44"
+                sectionColor="#39FF14"
+                cellThickness={0.5}
+                sectionThickness={1.5}
+            />
+            <OrbitControls autoRotate autoRotateSpeed={0.5} enableZoom={false} enablePan={false} minPolarAngle={Math.PI / 3} maxPolarAngle={Math.PI / 2.5} />
         </Suspense>
+        {isGenerating && <Loader />}
       </Canvas>
       {!geometry && !isGenerating && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="text-center p-8 bg-base-200/50 rounded-lg backdrop-blur-sm">
-            <h2 className="text-2xl font-bold">Your 3D Model Will Appear Here</h2>
-            <p className="text-gray-400 mt-2">Upload a sketch and click "Generate" to begin.</p>
+          <div className="text-center p-8 max-w-sm animate-fade-in">
+            <GridIcon className="w-24 h-24 text-base-300 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold tracking-widest">3D VIEWPORT</h2>
+            <p className="text-content-muted mt-2">Upload a sketch to begin AI model generation.</p>
           </div>
         </div>
       )}
