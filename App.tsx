@@ -15,10 +15,15 @@ import { PipelineStage } from './types';
 type GeneratedGeometry = {
   vertices: number[];
   faces: number[];
+  uvs?: number[];
+  accuracyScore?: number;
+  accuracyJustification?: string;
 };
 
 export type WorkflowStep = 'upload' | 'generating' | 'results';
 type AuthScreen = 'login' | 'signup';
+export type ModelId = 'gemini-2.5-pro' | 'gemini-2.5-flash';
+
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -34,6 +39,10 @@ const App: React.FC = () => {
   const [generatedGeometries, setGeneratedGeometries] = useState<GeneratedGeometry[]>([]);
   const [selectedGeometryIndex, setSelectedGeometryIndex] = useState<number | null>(null);
   const [numberOfVariations, setNumberOfVariations] = useState<number>(3);
+  const [generateUVs, setGenerateUVs] = useState<boolean>(false);
+  const [textPrompt, setTextPrompt] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<ModelId>('gemini-2.5-pro');
+  const [creativityLevel, setCreativityLevel] = useState<number>(20); // 0-100, maps to temperature
   const [error, setError] = useState<string | null>(null);
   const [sketchPreview, setSketchPreview] = useState<string | null>(null);
   const modelRef = useRef<THREE.Group>(null!);
@@ -65,6 +74,58 @@ const App: React.FC = () => {
     };
   };
 
+  const fetchAndSetAccuracy = async (geometries: GeneratedGeometry[], sketch: File) => {
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const accuracySchema = {
+            type: Type.OBJECT,
+            properties: {
+                accuracyScore: { type: Type.INTEGER, description: 'A percentage score (0-100) of how well the 3D model matches the sketch.' },
+                accuracyJustification: { type: Type.STRING, description: 'A brief, one-sentence justification for the score.' }
+            },
+            required: ['accuracyScore', 'accuracyJustification']
+        };
+        const imagePart = await fileToGenerativePart(sketch);
+
+        const accuracyPromises = geometries.map(geo => {
+            const modelDataString = JSON.stringify({ vertices: geo.vertices, faces: geo.faces });
+            const prompt = `Given the user's original 2D sketch and the following generated 3D model data, evaluate the accuracy. How well does the 3D model represent the visual information in the sketch? Provide a percentage score and a brief justification.\n\n3D Model Data:\n${modelDataString}`;
+            
+            return ai.models.generateContent({
+                model: 'gemini-2.5-flash', // Use flash for speed on this secondary task
+                contents: { parts: [imagePart, { text: prompt }] },
+                config: {
+                    responseMimeType: 'application/json',
+                    responseSchema: accuracySchema,
+                    temperature: 0.1 // Low temp for deterministic evaluation
+                }
+            });
+        });
+
+        const accuracyResponses = await Promise.all(accuracyPromises);
+
+        const updatedGeometries = geometries.map((geo, index) => {
+            try {
+                const response = accuracyResponses[index];
+                const accuracyData = JSON.parse(response.text.trim());
+                return {
+                    ...geo,
+                    accuracyScore: accuracyData.accuracyScore,
+                    accuracyJustification: accuracyData.accuracyJustification,
+                };
+            } catch (e) {
+                console.error('Failed to parse accuracy data for variation', index, e);
+                return geo; // Return original geometry if parsing fails
+            }
+        });
+
+        setGeneratedGeometries(updatedGeometries);
+    } catch (e) {
+        console.error("Could not fetch accuracy scores:", e);
+        // Fail gracefully, don't show an error to the user for this optional feature.
+    }
+};
+
   const handleGeneration = async () => {
     if (!sketchFile) {
       setError("Please upload a sketch first.");
@@ -84,25 +145,42 @@ const App: React.FC = () => {
           type: Type.OBJECT,
           properties: {
               vertices: { type: Type.ARRAY, description: 'Flat array of vertex coordinates [x1, y1, z1, ...].', items: { type: Type.NUMBER } },
-              faces: { type: Type.ARRAY, description: 'Flat array of vertex indices for triangular faces [f1_v1, f1_v2, f1_v3, ...].', items: { type: Type.INTEGER } }
+              faces: { type: Type.ARRAY, description: 'Flat array of vertex indices for triangular faces [f1_v1, f1_v2, f1_v3, ...].', items: { type: Type.INTEGER } },
+              uvs: { type: Type.ARRAY, description: 'Optional flat array of UV coordinates for texture mapping [u1, v1, u2, v2, ...].', items: { type: Type.NUMBER } }
           },
           required: ['vertices', 'faces']
       };
+
+      const userDescription = textPrompt.trim()
+        ? `The user is sketching the following concept: "${textPrompt.trim()}". `
+        : '';
+
+      let baseInstruction = 'Based on the user\'s sketch (and description, if provided), convert it into a detailed, high-quality 3D mesh. Provide the output in JSON format with vertex coordinates and triangular face indices.';
+
+      if (generateUVs) {
+        baseInstruction += ' Additionally, generate well-laid-out UV coordinates for texture mapping.';
+      }
+      
+      const finalPrompt = userDescription + baseInstruction;
       const imagePart = await fileToGenerativePart(sketchFile);
       
       const updateStage = (stage: PipelineStage) => setPipelineStatus(prev => ({ ...prev, completedStages: new Set([...prev.completedStages, prev.currentStage!]), currentStage: stage }));
       
       updateStage(PipelineStage.PAIRING);
+
+      // Map creativity slider (0-100) to temperature (0.1 - 1.0)
+      // Lower creativity = lower temperature = more deterministic/accurate
+      const temperature = 0.1 + (creativityLevel / 100) * 0.9;
       
       const generationPromises = Array.from({ length: numberOfVariations }, () => 
         ai.models.generateContent({
-          model: 'gemini-2.5-pro',
-          contents: { parts: [ imagePart, { text: 'Convert this 2D sketch into a detailed, high-quality 3D mesh. Provide the output in JSON format with vertex coordinates and triangular face indices.' } ] },
+          model: selectedModel,
+          contents: { parts: [ imagePart, { text: finalPrompt } ] },
           config: {
               systemInstruction: 'You are an expert 3D modeling AI. Your task is to interpret a 2D sketch and generate a high-fidelity, topologically sound, manifold 3D mesh. The output must be clean, with no intersecting faces or non-manifold geometry. Prioritize accuracy and detail to create a model suitable for 3D printing or use in a game engine. The coordinate system is right-handed Y-up.',
               responseMimeType: 'application/json',
               responseSchema: schema,
-              temperature: 0.2,
+              temperature: temperature,
           }
         })
       );
@@ -123,10 +201,13 @@ const App: React.FC = () => {
 
       if (geometries.length === 0) throw new Error("The model failed to generate valid 3D data. Try a different sketch.");
       
-      setGeneratedGeometries(geometries);
+      setGeneratedGeometries(geometries); // First update to show models immediately
       setSelectedGeometryIndex(0);
       setWorkflowStep('results');
       setPipelineStatus({ currentStage: null, completedStages: new Set(Object.values(PipelineStage)) });
+      
+      // Asynchronously fetch accuracy without blocking the UI
+      fetchAndSetAccuracy(geometries, sketchFile);
 
     } catch (e) {
       console.error(e);
@@ -151,6 +232,7 @@ const App: React.FC = () => {
     setGeneratedGeometries([]);
     setSelectedGeometryIndex(null);
     setError(null);
+    setTextPrompt('');
     if (sketchFile) {
       setWorkflowStep('generating');
     }
@@ -176,11 +258,45 @@ const App: React.FC = () => {
 
     const geo = mesh.geometry;
     const pos = geo.attributes.position;
+    const uv = geo.attributes.uv;
     const idx = geo.index;
+    
     let output = '# Generated by Sketch-to-3D Mesh AI\n';
-    for (let i = 0; i < pos.count; i++) output += `v ${pos.getX(i).toFixed(6)} ${pos.getY(i).toFixed(6)} ${pos.getZ(i).toFixed(6)}\n`;
-    if (idx) for (let i = 0; i < idx.count; i += 3) output += `f ${idx.getX(i) + 1} ${idx.getY(i) + 1} ${idx.getZ(i) + 1}\n`;
-    else for (let i = 0; i < pos.count; i += 3) output += `f ${i + 1} ${i + 2} ${i + 3}\n`;
+    
+    for (let i = 0; i < pos.count; i++) {
+        output += `v ${pos.getX(i).toFixed(6)} ${pos.getY(i).toFixed(6)} ${pos.getZ(i).toFixed(6)}\n`;
+    }
+    
+    if (uv) {
+        for (let i = 0; i < uv.count; i++) {
+            output += `vt ${uv.getX(i).toFixed(6)} ${uv.getY(i).toFixed(6)}\n`;
+        }
+    }
+
+    if (idx) {
+        for (let i = 0; i < idx.count; i += 3) {
+            const i1 = idx.getX(i) + 1;
+            const i2 = idx.getY(i) + 1;
+            const i3 = idx.getZ(i) + 1;
+            if (uv) {
+                output += `f ${i1}/${i1} ${i2}/${i2} ${i3}/${i3}\n`;
+            } else {
+                output += `f ${i1} ${i2} ${i3}\n`;
+            }
+        }
+    } else {
+        for (let i = 0; i < pos.count; i += 3) {
+             const i1 = i + 1;
+             const i2 = i + 2;
+             const i3 = i + 3;
+            if (uv) {
+                output += `f ${i1}/${i1} ${i2}/${i2} ${i3}/${i3}\n`;
+            } else {
+                 output += `f ${i1} ${i2} ${i3}\n`;
+            }
+        }
+    }
+
     saveFile(new Blob([output], { type: 'text/plain' }), `model_variation_${(selectedGeometryIndex ?? 0) + 1}.obj`);
   };
 
@@ -207,7 +323,12 @@ const App: React.FC = () => {
       <Header />
       {isDrawing && <DrawingCanvas onComplete={handleDrawingComplete} onCancel={handleToggleDrawing} />}
       <main className="flex-1 relative">
-        <Viewer geometry={selectedGeometry} isGenerating={isGenerating} modelRef={modelRef} />
+        <Viewer 
+          geometry={selectedGeometry} 
+          isGenerating={isGenerating}
+          pipelineStatus={pipelineStatus}
+          modelRef={modelRef} 
+        />
         <ControlBar
           onFileChange={handleFileChange}
           onGenerate={handleGeneration}
@@ -220,7 +341,15 @@ const App: React.FC = () => {
           onStartOver={handleStartOver}
           numberOfVariations={numberOfVariations}
           onNumberOfVariationsChange={setNumberOfVariations}
-          generatedVariationsCount={generatedGeometries.length}
+          generateUVs={generateUVs}
+          onGenerateUVsChange={setGenerateUVs}
+          textPrompt={textPrompt}
+          onTextPromptChange={setTextPrompt}
+          selectedModel={selectedModel}
+          onSelectedModelChange={setSelectedModel}
+          creativityLevel={creativityLevel}
+          onCreativityLevelChange={setCreativityLevel}
+          generatedGeometries={generatedGeometries}
           selectedVariationIndex={selectedGeometryIndex}
           onSelectVariation={setSelectedGeometryIndex}
           workflowStep={workflowStep}

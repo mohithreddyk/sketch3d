@@ -22,85 +22,124 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ onComplete, onCanc
   const [history, setHistory] = useState<ImageData[]>([]);
   const [redoHistory, setRedoHistory] = useState<ImageData[]>([]);
 
-  useEffect(() => {
+  const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
 
-    const context = canvas.getContext('2d');
-    if (!context) return;
+    // Only resize if needed to avoid clearing unnecessarily
+    if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
 
-    context.scale(dpr, dpr);
-    context.lineCap = 'round';
-    context.fillStyle = '#050816';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    contextRef.current = context;
+      const context = canvas.getContext('2d');
+      if (!context) return;
+      contextRef.current = context;
 
-    // Save initial state
-    const initialImageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    setHistory([initialImageData]);
+      context.fillStyle = '#050816';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      context.lineCap = 'round';
+
+      const initialImageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      setHistory([initialImageData]);
+      setRedoHistory([]);
+    }
   }, []);
 
-  const saveState = () => {
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // ResizeObserver is more reliable than window.resize for tracking
+    // the actual size of the canvas element. This ensures that the
+    // canvas backing store dimensions are always in sync with its CSS
+    // dimensions, fixing coordinate mapping issues on high-DPI screens
+    // or during layout changes.
+    const observer = new ResizeObserver(() => {
+      setupCanvas();
+    });
+    observer.observe(canvas);
+
+    // Initial setup
+    setupCanvas();
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [setupCanvas]);
+
+  const saveState = useCallback(() => {
     const canvas = canvasRef.current;
     const context = contextRef.current;
     if (!canvas || !context) return;
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
     setHistory(prev => [...prev, imageData]);
     setRedoHistory([]); // Clear redo history on a new action
-  };
+  }, []);
 
-  const getEventCoordinates = (event: React.MouseEvent | React.TouchEvent) => {
-    if (!canvasRef.current) return { offsetX: 0, offsetY: 0 };
+  const getEventCoordinates = useCallback((event: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    if ('touches' in event) {
-        return {
-            offsetX: event.touches[0].clientX - rect.left,
-            offsetY: event.touches[0].clientY - rect.top,
-        };
+
+    let clientX: number, clientY: number;
+
+    if ('touches' in event && event.touches.length > 0) {
+      clientX = event.touches[0].clientX;
+      clientY = event.touches[0].clientY;
+    } else if ('clientX' in event) {
+      clientX = (event as React.MouseEvent).clientX;
+      clientY = (event as React.MouseEvent).clientY;
+    } else {
+        return { x: 0, y: 0 };
     }
-    return { offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
-  }
+    
+    // Scale the event coordinates to match the canvas's backing store resolution
+    const dpr = window.devicePixelRatio || 1;
+    return { 
+        x: (clientX - rect.left) * dpr,
+        y: (clientY - rect.top) * dpr 
+    };
+  }, []);
 
   const startDrawing = useCallback((event: React.MouseEvent | React.TouchEvent) => {
     const context = contextRef.current;
     if (!context) return;
     
+    const dpr = window.devicePixelRatio || 1;
     if (tool === 'draw') {
         context.globalCompositeOperation = 'source-over';
         context.strokeStyle = '#39FF14';
-        context.lineWidth = 4;
+        context.lineWidth = 4 * dpr; // Scale line width
     } else {
         context.globalCompositeOperation = 'destination-out';
-        context.lineWidth = 20;
+        context.lineWidth = 20 * dpr; // Scale eraser width
     }
 
-    const { offsetX, offsetY } = getEventCoordinates(event);
+    const { x, y } = getEventCoordinates(event);
     context.beginPath();
-    context.moveTo(offsetX, offsetY);
+    context.moveTo(x, y);
     setIsDrawing(true);
     event.preventDefault();
-  }, [tool]);
+  }, [tool, getEventCoordinates]);
 
   const stopDrawing = useCallback(() => {
     if (isDrawing) {
       saveState();
     }
     setIsDrawing(false);
-  }, [isDrawing]);
+  }, [isDrawing, saveState]);
 
   const draw = useCallback((event: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing) return;
-    const { offsetX, offsetY } = getEventCoordinates(event);
-    contextRef.current?.lineTo(offsetX, offsetY);
+    const { x, y } = getEventCoordinates(event);
+    contextRef.current?.lineTo(x, y);
     contextRef.current?.stroke();
     event.preventDefault();
-  }, [isDrawing]);
+  }, [isDrawing, getEventCoordinates]);
   
   const handleUndo = () => {
       if (history.length <= 1) return; // Can't undo initial state
@@ -131,11 +170,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ onComplete, onCanc
     const canvas = canvasRef.current;
     const context = contextRef.current;
     if (canvas && context) {
-      context.fillStyle = '#050816';
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      const clearedImageData = context.getImageData(0, 0, canvas.width, canvas.height);
-      setHistory([clearedImageData]);
-      setRedoHistory([]);
+      // The setup function handles clearing and resetting history
+      setupCanvas();
     }
   };
 
